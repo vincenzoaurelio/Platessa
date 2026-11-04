@@ -19,11 +19,13 @@ class MarkdownViewer:
     ZOOM_MIN = 0.4
     ZOOM_MAX = 5.0
 
+    BG_COLOR= "#adadc9"
     def __init__(self, root):
         self.root = root
         self.root.title("Platessa")
         self.root.geometry("900x700")
 
+        self.root.configure(bg=self.BG_COLOR)
         # Status bar
         self.status = tk.Label(root, text="No file open", anchor="w", relief="sunken")
         self.status.pack(side="bottom", fill="x")
@@ -37,6 +39,14 @@ class MarkdownViewer:
             on_link_click=self._handle_link,
         )
         self.html_frame.pack(fill="both", expand=True)
+
+        self.html_frame.load_html(
+                f'<html><body style="margin:0;background:{self.BG_COLOR};'
+                'color:#888;font-family:sans-serif;display:flex;'
+                'align-items:center;justify-content:center;height:100vh;">'
+                'Open a Markdown file with Ctrl+O</body></html>'
+        )
+
 
         self.current_file = None
         self.zoom = 1.0
