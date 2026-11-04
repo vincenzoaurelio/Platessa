@@ -1,4 +1,5 @@
 # Platessa
+![platessa](logo.png)
 platessa.py is a markdown viewer vibecoded in python with Tkinter.
 
 ## Install requirements
@@ -10,7 +11,9 @@ If you don't want to create a virtual environment skip to second step
     source platessa/bin/activate
     ```
 2. Install requirements
-    `pip install requirements.txt`
+    ```bash
+    pip install -r requirements.txt
+    ```
 
 ## Usage
 - Vim keybindings: j k h l gg G C-d C-u C-f C-b
