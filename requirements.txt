@@ -1,2 +1,4 @@
-markdown>=3.5
-tkinterweb>=3.23
+markdown
+ziamath
+tkinterweb[recommended]
+cairosvg

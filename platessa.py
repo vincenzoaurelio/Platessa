@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
+"""
+Platessa — Markdown viewer with Tkinter.
+"""
 
 import os
 import re
 import sys
+import hashlib
+import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from urllib.parse import quote, urlparse
 
 import markdown
 from tkinterweb import HtmlFrame
+
+from ziamath import zmath as zm
 
 
 class MarkdownViewer:
@@ -18,11 +25,16 @@ class MarkdownViewer:
 
     BG_COLOR = "#adadc9"
 
+    # Cache directory for rendered formula SVGs.
+    MATH_CACHE_DIR = os.path.join(tempfile.gettempdir(), "platessa_math")
+
     def __init__(self, root):
         self.root = root
         self.root.title("Platessa")
         self.root.geometry("900x700")
         self.root.configure(bg=self.BG_COLOR)
+
+        os.makedirs(self.MATH_CACHE_DIR, exist_ok=True)
 
         # Status bar
         self.status = tk.Label(root, text="No file open", anchor="w", relief="sunken")
@@ -46,6 +58,9 @@ class MarkdownViewer:
         self._bind_keys()
         self._show_placeholder("logo.png")
 
+    # ------------------------------------------------------------------ #
+    #  Placeholder / logo
+    # ------------------------------------------------------------------ #
     def _show_placeholder(self, image_path=None):
         """Show the first screen: centered image (if any) on BG_COLOR."""
         if image_path and os.path.isfile(image_path):
@@ -57,8 +72,7 @@ class MarkdownViewer:
         else:
             inner = '<div style="color:#888;font-family:sans-serif;">Open a Markdown file with Ctrl+O</div>'
 
-        # Table-based centering: works in tkinterweb's minimal HTML engine,
-        # where flexbox is sometimes ignored and 100vh can resolve to 0.
+        # Table-based centering works in Tkhtml's minimal engine.
         self.html_frame.load_html(
             f'<html><body style="margin:0;padding:0;background:{self.BG_COLOR};">'
             '<table width="100%" height="100%" cellpadding="0" cellspacing="0" border="0">'
@@ -99,17 +113,13 @@ class MarkdownViewer:
     # ------------------------------------------------------------------ #
     #  Keybindings
     # ------------------------------------------------------------------ #
-    # ------------------------------------------------------------------ #
-    #  Keybindings
-    # ------------------------------------------------------------------ #
     def _bind_keys(self):
         r = self.root
         r.bind("<Control-o>", lambda e: self.open_file())
         r.bind("r", lambda e: self.reload_file())
         r.bind("q", lambda e: r.quit())
 
-        # Zoom in: Ctrl + / Ctrl = / numpad, AND bare + / = / KP_Add.
-        # Tk delivers Shift+= as "<plus>", so bind both "<plus>" and "<equal>".
+        # Zoom in: Ctrl + / = / numpad, AND bare + / = / KP_Add
         for seq in ("<Control-plus>", "<Control-equal>", "<Control-KP_Add>",
                     "<plus>", "<equal>", "<KP_Add>"):
             r.bind(seq, lambda e: self.change_zoom(+1))
@@ -119,9 +129,8 @@ class MarkdownViewer:
                     "<minus>", "<KP_Subtract>"):
             r.bind(seq, lambda e: self.change_zoom(-1))
 
-        # Reset
-        for seq in ("<Control-0>", "<Control-KP_0>",
-                    "<Key-0>", "<KP_0>"):
+        # Reset zoom
+        for seq in ("<Control-0>", "<Control-KP_0>", "<Key-0>", "<KP_0>"):
             r.bind(seq, lambda e: self.reset_zoom())
 
         # Vim movement
@@ -136,6 +145,7 @@ class MarkdownViewer:
         r.bind("G", lambda e: self.scroll_to_bottom())
         self._g_pending = False
         r.bind("g", self._on_g)
+
     def _on_g(self, event):
         if self._g_pending:
             self._g_pending = False
@@ -208,11 +218,7 @@ class MarkdownViewer:
         self._apply_zoom()
 
     def _apply_zoom(self):
-        """Re-render with new zoom, and resize the window if appropriate."""
-        # Resize the window only when it's in the normal (not fullscreen /
-        # not maximized / not iconified) state.  Fullscreen WMs ignore
-        # geometry() anyway, and calling it there is what caused the
-        # original "zoom is broken in fullscreen" bug.
+        """Resize window (normal state only) then re-render with new zoom."""
         try:
             in_normal_state = self.root.state() == "normal"
         except Exception:
@@ -225,13 +231,13 @@ class MarkdownViewer:
             target_h = max(360, min(int(self.base_height * self.zoom), int(sh * 0.92)))
             self.root.geometry(f"{target_w}x{target_h}")
 
-        # Re-render so the zoom factor is baked into the CSS.
         if self.current_file:
             self.load_file(self.current_file)
         else:
             self._show_placeholder("logo.png")
 
         self.status.config(text=f"Zoom: {self.zoom:.0%}")
+
     # ------------------------------------------------------------------ #
     #  File loading
     # ------------------------------------------------------------------ #
@@ -297,16 +303,100 @@ class MarkdownViewer:
         return pattern.sub(repl, html_body)
 
     # ------------------------------------------------------------------ #
+    #  LaTeX → SVG (ziamath)
+    # ------------------------------------------------------------------ #
+    def _render_formula_svg(self, tex: str, display: bool):
+        # Bucket the zoom to the nearest 25% so we don't regenerate the
+        # cache on every 1.15x step; SVG scales perfectly anyway, but a
+        # larger base size avoids blurring on aggressive zoom.
+        zoom_bucket = max(1.0, round(self.zoom * 4) / 4)
+        key = hashlib.sha256(
+            f"{display}|{zoom_bucket}|{tex}".encode("utf-8")
+        ).hexdigest()[:16]
+        path = os.path.join(self.MATH_CACHE_DIR, f"{key}.svg")
+
+        if os.path.isfile(path):
+            return path
+
+        try:
+            # display=True → inline=False (block/display mode)
+            # display=False → inline=True (inline mode)
+            eq = zm.Latex(tex, inline=not display)
+            svg = eq.svg()
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(svg)
+            return path
+        except Exception as e:
+            print(f"[math] ziamath failed on {tex!r}: {e}", file=sys.stderr)
+            return None
+
+    def _preprocess_math(self, md_text: str) -> str:
+        """
+        Replace $$...$$ and $...$ with <img> tags pointing at SVG files.
+        Escaped \\$ is preserved. Fenced code blocks are protected by
+        temporarily replacing them with placeholders.
+        """
+        # Protect fenced code blocks so math inside them is left alone.
+        code_blocks = []
+
+        def stash_code(m):
+            code_blocks.append(m.group(0))
+            return f"\x00CODE{len(code_blocks) - 1}\x00"
+
+        md_text = re.sub(r"```.*?```", stash_code, md_text, flags=re.DOTALL)
+
+        # Block math: $$...$$
+        block_re = re.compile(r"(?<!\\)\$\$(.+?)(?<!\\)\$\$", re.DOTALL)
+
+        def block_repl(m):
+            tex = m.group(1).strip()
+            svg = self._render_formula_svg(tex, display=True)
+            if not svg:
+                return m.group(0)
+            url = self._to_file_url(svg)
+            return (f'\n\n<p style="text-align:center;">'
+                    f'<img src="{url}" style="max-width:100%;" />'
+                    f'</p>\n\n')
+
+        md_text = block_re.sub(block_repl, md_text)
+
+        # Inline math: $...$
+        inline_re = re.compile(r"(?<!\\)\$(.+?)(?<!\\)\$")
+
+        def inline_repl(m):
+            tex = m.group(1).strip()
+            if not tex:
+                return m.group(0)
+            svg = self._render_formula_svg(tex, display=False)
+            if not svg:
+                return m.group(0)
+            url = self._to_file_url(svg)
+            return f'<img src="{url}" style="vertical-align:middle;" />'
+
+        md_text = inline_re.sub(inline_repl, md_text)
+
+        # Restore fenced code blocks.
+        def unstash(m):
+            idx = int(m.group(1))
+            return code_blocks[idx]
+
+        md_text = re.sub(r"\x00CODE(\d+)\x00", unstash, md_text)
+        return md_text
+
+    # ------------------------------------------------------------------ #
     #  Rendering
     # ------------------------------------------------------------------ #
     def render(self, md_text, base_dir=None):
         base_dir = base_dir or os.getcwd()
 
-        html_body = markdown.markdown(md_text, extensions=["extra", "toc", "sane_lists"])
+        md_text = self._preprocess_math(md_text)
 
+        html_body = markdown.markdown(
+            md_text,
+            extensions=["extra", "toc", "sane_lists"],
+        )
         html_body = self._rewrite_img_srcs(html_body, base_dir)
 
-        # Zoom is baked into the base font size. 1.0 == 15px.
         base_font = 15 * self.zoom
 
         html = f"""<!DOCTYPE html>
@@ -332,7 +422,7 @@ class MarkdownViewer:
     table {{ border-collapse: collapse; margin: 1em 0; }}
     th, td {{ border: 1px solid #dfe2e5; padding: 6px 13px; }}
     th {{ background: #f6f8fa; }}
-    img {{ max-width: 100%; height: auto; display: block; margin: 1em auto; }}
+    img {{ max-width: 100%; height: auto; }}
     blockquote {{ border-left: 4px solid #dfe2e5; color: #6a737d; margin: 0; padding-left: 1em; }}
     a {{ color: #0366d6; }}
 </style>
