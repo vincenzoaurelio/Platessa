@@ -53,14 +53,22 @@ class MarkdownViewer:
         """Show the first screen: centered image (if any) on BG_COLOR."""
         if image_path and os.path.isfile(image_path):
             img_url = self._to_file_url(image_path)
-            inner = f'<img src="{img_url}" style="max-width:60%;max-height:60vh;">'
+            inner = (
+                f'<img src="{img_url}" '
+                'style="max-width:60%;max-height:60vh;display:block;margin:auto;">'
+            )
         else:
             inner = '<div style="color:#888;font-family:sans-serif;">Open a Markdown file with Ctrl+O</div>'
 
+        # Table-based centering: works in tkinterweb's minimal HTML engine,
+        # where flexbox is sometimes ignored and 100vh can resolve to 0.
         self.html_frame.load_html(
-            f'<html><body style="margin:0;background:{self.BG_COLOR};'
-            'display:flex;align-items:center;justify-content:center;height:100vh;">'
-            f'{inner}</body></html>'
+            f'<html><body style="margin:0;padding:0;background:{self.BG_COLOR};">'
+            '<table width="100%" height="100%" cellpadding="0" cellspacing="0" border="0">'
+            '<tr><td align="center" valign="middle">'
+            f'{inner}'
+            '</td></tr></table>'
+            '</body></html>'
         )
 
     # ------------------------------------------------------------------ #
