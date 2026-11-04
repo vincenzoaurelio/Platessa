@@ -1,5 +1,6 @@
 # Platessa
 ![platessa](logo.png)
+
 platessa.py is a markdown viewer vibecoded in python with Tkinter.
 
 ## Install requirements
