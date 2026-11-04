@@ -21,6 +21,7 @@ If you don't want to create a virtual environment skip to second step
     ```
 
 ## Usage
+- Press C-o to open a file
 - Vim keybindings: j k h l gg G C-d C-u C-f C-b
 - Zoom: + / - / 0 with automatic window resize
 - Support for local (relative/absolute) and remote images
