@@ -40,13 +40,6 @@ class MarkdownViewer:
         )
         self.html_frame.pack(fill="both", expand=True)
 
-        self.html_frame.load_html(
-                f'<html><body style="margin:0;background:{self.BG_COLOR};'
-                'color:#888;font-family:sans-serif;display:flex;'
-                'align-items:center;justify-content:center;height:100vh;">'
-                'Open a Markdown file with Ctrl+O</body></html>'
-        )
-
 
         self.current_file = None
         self.zoom = 1.0
@@ -54,6 +47,21 @@ class MarkdownViewer:
         self.base_height = 700
 
         self._bind_keys()
+        self._show_placeholder("logo.png")
+
+    def _show_placeholder(self, image_path=None):
+        """Show the first screen: centered image (if any) on BG_COLOR."""
+        if image_path and os.path.isfile(image_path):
+            img_url = self._to_file_url(image_path)
+            inner = f'<img src="{img_url}" style="max-width:60%;max-height:60vh;">'
+        else:
+            inner = '<div style="color:#888;font-family:sans-serif;">Open a Markdown file with Ctrl+O</div>'
+
+        self.html_frame.load_html(
+            f'<html><body style="margin:0;background:{self.BG_COLOR};'
+            'display:flex;align-items:center;justify-content:center;height:100vh;">'
+            f'{inner}</body></html>'
+        )
 
     # ------------------------------------------------------------------ #
     #  Link handling
