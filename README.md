@@ -3,6 +3,10 @@
 
 platessa.py is a markdown viewer vibecoded in python with Tkinter.
 
+## Features
+- Pictures displayed in place
+- LaTeX formulas renderer
+
 ## Install requirements
 If you don't want to create a virtual environment skip to second step 
 
