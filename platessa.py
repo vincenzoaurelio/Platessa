@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-"""
-Markdown viewer with Tkinter.
-"""
 
 import os
 import re
