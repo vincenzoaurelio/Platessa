@@ -19,13 +19,14 @@ class MarkdownViewer:
     ZOOM_MIN = 0.4
     ZOOM_MAX = 5.0
 
-    BG_COLOR= "#adadc9"
+    BG_COLOR = "#adadc9"
+
     def __init__(self, root):
         self.root = root
         self.root.title("Platessa")
         self.root.geometry("900x700")
-
         self.root.configure(bg=self.BG_COLOR)
+
         # Status bar
         self.status = tk.Label(root, text="No file open", anchor="w", relief="sunken")
         self.status.pack(side="bottom", fill="x")
@@ -39,7 +40,6 @@ class MarkdownViewer:
             on_link_click=self._handle_link,
         )
         self.html_frame.pack(fill="both", expand=True)
-
 
         self.current_file = None
         self.zoom = 1.0
@@ -94,20 +94,30 @@ class MarkdownViewer:
     # ------------------------------------------------------------------ #
     #  Keybindings
     # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------ #
+    #  Keybindings
+    # ------------------------------------------------------------------ #
     def _bind_keys(self):
         r = self.root
         r.bind("<Control-o>", lambda e: self.open_file())
         r.bind("r", lambda e: self.reload_file())
         r.bind("q", lambda e: r.quit())
 
-        # Zoom
-        r.bind("+", lambda e: self.change_zoom(+1))
-        r.bind("=", lambda e: self.change_zoom(+1))
-        r.bind("KP_Add", lambda e: self.change_zoom(+1))
-        r.bind("-", lambda e: self.change_zoom(-1))
-        r.bind("KP_Subtract", lambda e: self.change_zoom(-1))
-        r.bind("0", lambda e: self.reset_zoom())
-        r.bind("KP_0", lambda e: self.reset_zoom())
+        # Zoom in: Ctrl + / Ctrl = / numpad, AND bare + / = / KP_Add.
+        # Tk delivers Shift+= as "<plus>", so bind both "<plus>" and "<equal>".
+        for seq in ("<Control-plus>", "<Control-equal>", "<Control-KP_Add>",
+                    "<plus>", "<equal>", "<KP_Add>"):
+            r.bind(seq, lambda e: self.change_zoom(+1))
+
+        # Zoom out
+        for seq in ("<Control-minus>", "<Control-KP_Subtract>",
+                    "<minus>", "<KP_Subtract>"):
+            r.bind(seq, lambda e: self.change_zoom(-1))
+
+        # Reset
+        for seq in ("<Control-0>", "<Control-KP_0>",
+                    "<Key-0>", "<KP_0>"):
+            r.bind(seq, lambda e: self.reset_zoom())
 
         # Vim movement
         r.bind("j", lambda e: self.scroll_lines(+1))
@@ -121,7 +131,6 @@ class MarkdownViewer:
         r.bind("G", lambda e: self.scroll_to_bottom())
         self._g_pending = False
         r.bind("g", self._on_g)
-
     def _on_g(self, event):
         if self._g_pending:
             self._g_pending = False
@@ -188,24 +197,36 @@ class MarkdownViewer:
         self._apply_zoom()
 
     def reset_zoom(self):
+        if abs(self.zoom - 1.0) < 1e-6:
+            return
         self.zoom = 1.0
-        self.root.geometry(f"{self.base_width}x{self.base_height}")
         self._apply_zoom()
 
     def _apply_zoom(self):
+        """Re-render with new zoom, and resize the window if appropriate."""
+        # Resize the window only when it's in the normal (not fullscreen /
+        # not maximized / not iconified) state.  Fullscreen WMs ignore
+        # geometry() anyway, and calling it there is what caused the
+        # original "zoom is broken in fullscreen" bug.
         try:
-            self.html_frame.set_zoom(self.zoom)
+            in_normal_state = self.root.state() == "normal"
         except Exception:
-            pass
+            in_normal_state = True
 
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        target_w = min(int(self.base_width * self.zoom), int(sw * 0.98))
-        target_h = min(int(self.base_height * self.zoom), int(sh * 0.92))
-        target_w = max(target_w, 480)
-        target_h = max(target_h, 360)
-        self.root.geometry(f"{target_w}x{target_h}")
+        if in_normal_state:
+            sw = self.root.winfo_screenwidth()
+            sh = self.root.winfo_screenheight()
+            target_w = max(480, min(int(self.base_width * self.zoom), int(sw * 0.98)))
+            target_h = max(360, min(int(self.base_height * self.zoom), int(sh * 0.92)))
+            self.root.geometry(f"{target_w}x{target_h}")
 
+        # Re-render so the zoom factor is baked into the CSS.
+        if self.current_file:
+            self.load_file(self.current_file)
+        else:
+            self._show_placeholder("logo.png")
+
+        self.status.config(text=f"Zoom: {self.zoom:.0%}")
     # ------------------------------------------------------------------ #
     #  File loading
     # ------------------------------------------------------------------ #
@@ -280,6 +301,9 @@ class MarkdownViewer:
 
         html_body = self._rewrite_img_srcs(html_body, base_dir)
 
+        # Zoom is baked into the base font size. 1.0 == 15px.
+        base_font = 15 * self.zoom
+
         html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -288,7 +312,7 @@ class MarkdownViewer:
     html, body {{ margin: 0; padding: 0; background: #ffffff; }}
     body {{
         font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-        font-size: 15px; line-height: 1.6; color: #24292e;
+        font-size: {base_font:.1f}px; line-height: 1.6; color: #24292e;
         max-width: 860px; margin: 0 auto; padding: 24px;
     }}
     h1, h2, h3, h4, h5, h6 {{
