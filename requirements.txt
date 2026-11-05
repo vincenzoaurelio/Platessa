@@ -1,4 +1,4 @@
-markdown
-ziamath
-tkinterweb[recommended]
-cairosvg
+markdown>=3.10
+ziamath>=0.13
+tkinterweb>=4.25
+cairosvg>=2.8
