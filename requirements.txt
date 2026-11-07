@@ -1,4 +1,5 @@
 markdown>=3.10
-ziamath>=0.13
+ziamath>=0.13              # comment if you are not intersted to LaTeX formulas
 tkinterweb>=4.25
-cairosvg>=2.8
+cairosvg>=2.8              # comment if you are not intersted to LaTeX formulas
+tkinterdnd2>=0.6.2         # comment if you are not intersted to Drag and drop

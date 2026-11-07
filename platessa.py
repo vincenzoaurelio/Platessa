@@ -286,43 +286,41 @@ class MarkdownViewer:
     def _setup_dnd(self):
         if not _DND_AVAILABLE:
             return
-
-        # Use the HtmlFrame container as drop target (not its internal html
-        # widget, which does not respond to Tcl-level DnD events).
-        targets = [self.html_frame, self.root]
-        for w in targets:
-            try:
-                w.drop_target_register(DND_FILES)
-                w.dnd_bind("<<Drop>>", self._on_drop)
-            except Exception as e:
-                print(f"[dnd] could not register {w}: {e}", file=sys.stderr)
-
+    
+        # Register the root window as the ONLY drop target.
+        # HtmlFrame is a composite widget; registering it or its internal
+        # html widget with tkinterdnd2 is unreliable. The root window
+        # receives the drop event and we delegate from there.
+        try:
+            self.root.drop_target_register(DND_FILES)
+            self.root.dnd_bind("<<Drop>>", self._on_drop)
+        except Exception as e:
+            print(f"[dnd] could not register root: {e}", file=sys.stderr)
+    
     def _on_drop(self, event):
-        # event.data is a Tcl list; splitlist handles braces/spaces.
+        # event.data is a raw Tcl list string. splitlist handles the braces
+        # that Tcl adds around paths containing spaces.
         try:
             paths = self.root.tk.splitlist(event.data)
         except Exception:
             paths = [event.data]
         if not paths:
             return
-
+    
         path = paths[0]
-        # Strip a trailing directory (some drops pass "file://" style paths).
         if path.startswith("file://"):
             path = urlparse(path).path
-
+    
         if not os.path.isfile(path):
             self.status.config(text=f"Dropped: {path} (not a file)")
             return
-
+    
         ext = os.path.splitext(path)[1].lower()
         image_exts = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg"}
         if ext in image_exts:
-            # Reuse the existing image viewer path.
             self._handle_link(self._to_file_url(path))
         else:
             self.load_file(path)
-
     # ------------------------------------------------------------------ #
     #  Command line (vim-style ':')
     # ------------------------------------------------------------------ #
@@ -825,14 +823,14 @@ def main():
 
     if _DND_AVAILABLE:
         root = TkinterDnD.Tk()
+        print("[dnd] using TkinterDnD.Tk()", file=sys.stderr)
     else:
         root = tk.Tk()
+        print("[dnd] tkinterdnd2 NOT available — drag and drop disabled",
+              file=sys.stderr)
 
     app = MarkdownViewer(root)
     if path:
         app.load_file(path)
     root.mainloop()
-
-
-if __name__ == "__main__":
-    main()
+main()
