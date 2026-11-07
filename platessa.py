@@ -27,6 +27,16 @@ except Exception:  # ImportError, TclError (no tkdnd binary), etc.
     DND_FILES = None
     _DND_AVAILABLE = False
 
+# Native file dialog is optional too. crossfiledialog is a tiny pure-Python
+# wrapper around zenity/kdialog/pywin32/osascript; if it is missing we fall
+# back to Tkinter's own filedialog.
+try:
+    import crossfiledialog
+    _NATIVE_DIALOG_AVAILABLE = True
+except Exception:
+    crossfiledialog = None
+    _NATIVE_DIALOG_AVAILABLE = False
+
 
 class MarkdownViewer:
     ZOOM_STEP = 1.15
@@ -65,6 +75,12 @@ class MarkdownViewer:
         self.base_width = 900
         self.base_height = 700
 
+        # Command-line (vim-style ':') state.
+        self._cmd_mode = False
+        self._cmd_entry = None
+        self._cmd_completion = []   # current candidate list
+        self._cmd_completion_idx = 0
+
         # Make sure keyboard focus lands on something useful.
         self.html_frame.configure(takefocus=True)
         self.html_frame.focus_set()
@@ -72,10 +88,11 @@ class MarkdownViewer:
         self._bind_keys()
         self._show_placeholder("logo.png")
 
-        # Bind mouse and DnD after the placeholder is loaded so the inner
-        # html widget exists.
+        # Bind mouse, DnD and the ':' command bar after the placeholder is
+        # loaded so the inner html widget exists.
         self._bind_mouse()
         self._setup_dnd()
+        self._setup_cmdline()
 
     # ------------------------------------------------------------------ #
     #  Placeholder / logo
@@ -168,6 +185,9 @@ class MarkdownViewer:
         # Arrow-key scrolling
         self._bind_scroll_keys(r)
 
+        # Esc closes the command bar if it is open (harmless otherwise).
+        r.bind("<Escape>", lambda e: self._cmdline_close())
+
     def _bind_scroll_keys(self, widget):
         """Arrow / PgUp / PgDn / Home / End scrolling. Returns 'break' so
         Tkhtml's own arrow handling does not double-scroll."""
@@ -239,6 +259,7 @@ class MarkdownViewer:
                 except tk.TclError:
                     # Sequence not supported by this Tk build — skip it.
                     pass
+
     def _on_mousewheel_event(self, event):
         # Windows: event.delta is ±120 per notch. macOS: small ±1 values.
         if event.delta == 0:
@@ -265,10 +286,10 @@ class MarkdownViewer:
     def _setup_dnd(self):
         if not _DND_AVAILABLE:
             return
-        targets = [self.root]
-        inner = self._html_widget()
-        if inner is not None:
-            targets.append(inner)
+
+        # Use the HtmlFrame container as drop target (not its internal html
+        # widget, which does not respond to Tcl-level DnD events).
+        targets = [self.html_frame, self.root]
         for w in targets:
             try:
                 w.drop_target_register(DND_FILES)
@@ -301,6 +322,205 @@ class MarkdownViewer:
             self._handle_link(self._to_file_url(path))
         else:
             self.load_file(path)
+
+    # ------------------------------------------------------------------ #
+    #  Command line (vim-style ':')
+    # ------------------------------------------------------------------ #
+    def _setup_cmdline(self):
+        # ':' opens the command bar. Bind on both root and the inner html
+        # widget, because the inner widget takes keyboard focus after a click.
+        for w in (self.root, self._html_widget()):
+            if w is not None:
+                w.bind(":", self._open_cmdline)
+
+    def _open_cmdline(self, event=None):
+        if self._cmd_mode:
+            return "break"
+        self._cmd_mode = True
+        self._cmd_completion = []
+        self._cmd_completion_idx = 0
+
+        if self._cmd_entry is None:
+            self._cmd_entry = tk.Entry(self.root, bd=0, relief="flat")
+            self._cmd_entry.bind("<Return>",   self._cmdline_execute)
+            self._cmd_entry.bind("<Escape>",   self._cmdline_close)
+            self._cmd_entry.bind("<Tab>",      self._cmdline_complete)
+            self._cmd_entry.bind("<Shift-Tab>", self._cmdline_complete)
+            self._cmd_entry.bind("<FocusOut>", self._cmdline_maybe_close)
+
+        self._cmd_entry.delete(0, "end")
+        self._cmd_entry.insert(0, ":")
+        self._cmd_entry.icursor("end")
+        self._cmd_entry.pack(side="bottom", fill="x", before=self.status)
+        self._cmd_entry.focus_force()
+        return "break"
+
+    def _cmdline_close(self, event=None):
+        if not self._cmd_mode:
+            return
+        self._cmd_mode = False
+        if self._cmd_entry is not None:
+            self._cmd_entry.pack_forget()
+        self.html_frame.focus_set()
+
+    def _cmdline_maybe_close(self, event=None):
+        # FocusOut also fires when Tab moves focus inside the entry; ignore
+        # that by checking whether we still have focus in the command mode.
+        if not self._cmd_mode:
+            return
+        # Defer: if focus comes back to the entry, do not close.
+        self.root.after(50, self._cmdline_check_focus)
+
+    def _cmdline_check_focus(self):
+        if not self._cmd_mode or self._cmd_entry is None:
+            return
+        try:
+            focused = self.root.focus_get()
+        except Exception:
+            focused = None
+        if focused is not self._cmd_entry:
+            self._cmdline_close()
+
+    def _cmdline_execute(self, event=None):
+        raw = self._cmd_entry.get()
+        text = raw[1:].strip()   # drop the leading ':'
+        self._cmdline_close()
+        if not text:
+            return "break"
+
+        # Split into command + argument.
+        parts = text.split(None, 1)
+        cmd, arg = parts[0], (parts[1] if len(parts) > 1 else "")
+
+        if cmd in ("e", "edit", "o", "open"):
+            path = arg or "."
+        elif cmd in ("q", "quit"):
+            self.root.quit()
+            return "break"
+        else:
+            # Treat the whole line as a path (bare ":~/file.md").
+            path = text
+            cmd, arg = "e", path
+
+        path = self._cmd_expand_path(path)
+        if not os.path.exists(path):
+            self.status.config(text=f"Not found: {path}")
+            return "break"
+
+        if os.path.isdir(path):
+            # Enter directory: reopen the cmdline with the dir as base.
+            self._open_cmdline()
+            self._cmd_entry.delete(0, "end")
+            self._cmd_entry.insert(0, ":" + self._cmd_display_path(path))
+            self._cmd_entry.icursor("end")
+        elif os.path.isfile(path):
+            self.load_file(path)
+        return "break"
+
+    def _cmd_expand_path(self, path):
+        return os.path.expanduser(os.path.expandvars(path))
+
+    @staticmethod
+    def _cmd_display_path(path):
+        """Use '~' prefix for paths under HOME (for display only)."""
+        home = os.path.expanduser("~")
+        if path == home:
+            return "~"
+        if path.startswith(home + os.sep):
+            return "~" + path[len(home):]
+        return path
+
+    def _cmdline_complete(self, event=None):
+        """Bash-like Tab completion.
+
+        Rules:
+        - Only one candidate: complete it fully (dirs get a trailing '/').
+        - Multiple candidates: complete to their longest common prefix,
+          counting only their names (no trailing slash). Never descend into
+          a single directory when more than one match exists.
+        - If the common prefix adds nothing new, list matches in the status
+          bar; further Tabs cycle through them.
+        - Hidden files are matched only when the basename starts with '.'.
+        """
+        raw = self._cmd_entry.get()
+        typed = raw[1:]
+        expanded = os.path.expanduser(os.path.expandvars(typed))
+
+        # Split into (dir_to_list, base_prefix).
+        if expanded.endswith(os.sep):
+            dir_to_list = expanded
+            base = ""
+        else:
+            dir_to_list, base = os.path.split(expanded)
+            if not dir_to_list:
+                dir_to_list = "."
+
+        try:
+            entries = sorted(os.listdir(dir_to_list))
+        except OSError:
+            return "break"
+
+        # Bash-style hidden-file rule.
+        show_hidden = base.startswith(".")
+        names = []
+        for name in entries:
+            if not show_hidden and name.startswith("."):
+                continue
+            if name.startswith(base):
+                names.append(name)
+
+        if not names:
+            return "break"
+
+        # Compute LCP over the plain names (no trailing slash!). This is
+        # the crucial part: "/Desktop/Documents/" and "/Desktop/Downloads/"
+        # share only "/Desktop/D", so bash stops at "D", not at
+        # "Documents/".
+        if len(names) == 1:
+            chosen = names[0]
+            is_dir = os.path.isdir(os.path.join(dir_to_list, chosen))
+        else:
+            chosen = os.path.commonprefix(names)
+            is_dir = False
+
+        # If the LCP is already the typed base, there is nothing to add:
+        # list matches, then cycle on subsequent Tabs.
+        if len(names) > 1 and len(chosen) == len(base):
+            if not self._cmd_completion:
+                self._cmd_completion = names
+                self._cmd_completion_idx = 0
+                self.status.config(
+                    text="  ".join(
+                        n + (os.sep if os.path.isdir(os.path.join(dir_to_list, n)) else "")
+                        for n in names
+                    )
+                )
+                return "break"
+            chosen = self._cmd_completion[self._cmd_completion_idx]
+            is_dir = os.path.isdir(os.path.join(dir_to_list, chosen))
+            self._cmd_completion_idx = (
+                self._cmd_completion_idx + 1
+            ) % len(self._cmd_completion)
+        else:
+            # Fresh completion path: forget any stale cycle state.
+            self._cmd_completion = []
+            self._cmd_completion_idx = 0
+
+        # Rebuild the path for display.
+        if os.path.isabs(expanded):
+            new_path = os.path.join(dir_to_list, chosen)
+        else:
+            new_path = chosen if dir_to_list == "." else os.path.join(dir_to_list, chosen)
+
+        new_text = self._cmd_display_path(new_path)
+        if is_dir and not new_text.endswith(os.sep):
+            new_text += os.sep
+
+        self._cmd_entry.delete(0, "end")
+        self._cmd_entry.insert(0, ":" + new_text)
+        self._cmd_entry.icursor("end")
+        return "break"
+
 
     # ------------------------------------------------------------------ #
     #  Scroll helpers
@@ -390,6 +610,20 @@ class MarkdownViewer:
     #  File loading
     # ------------------------------------------------------------------ #
     def open_file(self):
+        # Prefer the OS-native dialog when crossfiledialog is available;
+        # fall back to Tkinter's own filedialog otherwise.
+        if _NATIVE_DIALOG_AVAILABLE:
+            try:
+                path = crossfiledialog.open_file(
+                    title="Open Markdown file",
+                    filter=[["*.md", "*.markdown"], ["All files", "*"]],
+                )
+                if path:
+                    self.load_file(path)
+                return
+            except Exception as e:
+                print(f"[dialog] crossfiledialog failed: {e}", file=sys.stderr)
+
         path = filedialog.askopenfilename(
             title="Open Markdown file",
             filetypes=[("Markdown", "*.md *.markdown"), ("All files", "*.*")],
