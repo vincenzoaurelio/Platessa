@@ -17,6 +17,16 @@ from tkinterweb import HtmlFrame
 
 from ziamath import zmath as zm
 
+# Drag-and-drop support is optional. tkinterdnd2 patches tk.Tk at import time,
+# so it must be imported before any Tk() is created.
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+    _DND_AVAILABLE = True
+except Exception:  # ImportError, TclError (no tkdnd binary), etc.
+    TkinterDnD = None
+    DND_FILES = None
+    _DND_AVAILABLE = False
+
 
 class MarkdownViewer:
     ZOOM_STEP = 1.15
@@ -55,8 +65,17 @@ class MarkdownViewer:
         self.base_width = 900
         self.base_height = 700
 
+        # Make sure keyboard focus lands on something useful.
+        self.html_frame.configure(takefocus=True)
+        self.html_frame.focus_set()
+
         self._bind_keys()
         self._show_placeholder("logo.png")
+
+        # Bind mouse and DnD after the placeholder is loaded so the inner
+        # html widget exists.
+        self._bind_mouse()
+        self._setup_dnd()
 
     # ------------------------------------------------------------------ #
     #  Placeholder / logo
@@ -146,6 +165,31 @@ class MarkdownViewer:
         self._g_pending = False
         r.bind("g", self._on_g)
 
+        # Arrow-key scrolling
+        self._bind_scroll_keys(r)
+
+    def _bind_scroll_keys(self, widget):
+        """Arrow / PgUp / PgDn / Home / End scrolling. Returns 'break' so
+        Tkhtml's own arrow handling does not double-scroll."""
+        widget.bind("<Up>",           lambda e: self._scroll_key(self.scroll_lines, -1))
+        widget.bind("<Down>",         lambda e: self._scroll_key(self.scroll_lines, +1))
+        widget.bind("<Left>",         lambda e: self._scroll_key(self.scroll_x, -1))
+        widget.bind("<Right>",        lambda e: self._scroll_key(self.scroll_x, +1))
+        widget.bind("<Prior>",        lambda e: self._scroll_key(self.scroll_page, -1))
+        widget.bind("<Next>",         lambda e: self._scroll_key(self.scroll_page, +1))
+        widget.bind("<Home>",         lambda e: self._scroll_key(self.scroll_to_top, None))
+        widget.bind("<End>",          lambda e: self._scroll_key(self.scroll_to_bottom, None))
+        widget.bind("<Control-Home>", lambda e: self._scroll_key(self.scroll_to_top, None))
+        widget.bind("<Control-End>",  lambda e: self._scroll_key(self.scroll_to_bottom, None))
+
+    @staticmethod
+    def _scroll_key(fn, arg):
+        if arg is None:
+            fn()
+        else:
+            fn(arg)
+        return "break"
+
     def _on_g(self, event):
         if self._g_pending:
             self._g_pending = False
@@ -153,6 +197,110 @@ class MarkdownViewer:
         else:
             self._g_pending = True
             self.root.after(500, lambda: setattr(self, "_g_pending", False))
+
+    # ------------------------------------------------------------------ #
+    #  Mouse bindings
+    # ------------------------------------------------------------------ #
+    def _bind_mouse(self):
+        """Bind wheel / Shift+wheel on both root and the internal html widget.
+
+        The HtmlFrame's inner widget can hold focus, so a binding on root
+        alone would silently do nothing once the user has clicked inside.
+        """
+        targets = [self.root]
+        inner = self._html_widget()
+        if inner is not None:
+            targets.append(inner)
+            # Also re-apply arrow / PgUp / PgDn / Home / End on the inner widget.
+            self._bind_scroll_keys(inner)
+
+        # Some Tk builds reject <Button-6>/<Button-7> outright, so guard
+        # each bind. Unsupported sequences are simply skipped.
+        bindings = [
+            # Vertical wheel (Button-4/5 = X11; MouseWheel = Win/mac)
+            ("<Button-4>",   lambda e: self._on_wheel(e, -1, 0)),
+            ("<Button-5>",   lambda e: self._on_wheel(e, +1, 0)),
+            ("<MouseWheel>", self._on_mousewheel_event),
+
+            # Horizontal wheel (X11 buttons 6/7, when available)
+            ("<Button-6>", lambda e: self._on_wheel(e, 0, -1)),
+            ("<Button-7>", lambda e: self._on_wheel(e, 0, +1)),
+
+            # Shift+wheel → horizontal (Win/mac, and X11 trackpads)
+            ("<Shift-MouseWheel>", self._on_shift_mousewheel_event),
+            ("<Shift-Button-4>",   lambda e: self._on_wheel(e, 0, -1)),
+            ("<Shift-Button-5>",   lambda e: self._on_wheel(e, 0, +1)),
+        ]
+
+        for w in targets:
+            for sequence, handler in bindings:
+                try:
+                    w.bind(sequence, handler)
+                except tk.TclError:
+                    # Sequence not supported by this Tk build — skip it.
+                    pass
+    def _on_mousewheel_event(self, event):
+        # Windows: event.delta is ±120 per notch. macOS: small ±1 values.
+        if event.delta == 0:
+            return
+        direction = -1 if event.delta > 0 else +1
+        self._on_wheel(event, direction, 0)
+
+    def _on_shift_mousewheel_event(self, event):
+        if event.delta == 0:
+            return
+        direction = -1 if event.delta > 0 else +1
+        self._on_wheel(event, 0, direction)
+
+    def _on_wheel(self, event, dy, dx):
+        if dy:
+            self.scroll_lines(dy * 3)
+        if dx:
+            self.scroll_x(dx * 3)
+        return "break"  # stop Tkhtml's own wheel handling from double-scrolling
+
+    # ------------------------------------------------------------------ #
+    #  Drag & drop
+    # ------------------------------------------------------------------ #
+    def _setup_dnd(self):
+        if not _DND_AVAILABLE:
+            return
+        targets = [self.root]
+        inner = self._html_widget()
+        if inner is not None:
+            targets.append(inner)
+        for w in targets:
+            try:
+                w.drop_target_register(DND_FILES)
+                w.dnd_bind("<<Drop>>", self._on_drop)
+            except Exception as e:
+                print(f"[dnd] could not register {w}: {e}", file=sys.stderr)
+
+    def _on_drop(self, event):
+        # event.data is a Tcl list; splitlist handles braces/spaces.
+        try:
+            paths = self.root.tk.splitlist(event.data)
+        except Exception:
+            paths = [event.data]
+        if not paths:
+            return
+
+        path = paths[0]
+        # Strip a trailing directory (some drops pass "file://" style paths).
+        if path.startswith("file://"):
+            path = urlparse(path).path
+
+        if not os.path.isfile(path):
+            self.status.config(text=f"Dropped: {path} (not a file)")
+            return
+
+        ext = os.path.splitext(path)[1].lower()
+        image_exts = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg"}
+        if ext in image_exts:
+            # Reuse the existing image viewer path.
+            self._handle_link(self._to_file_url(path))
+        else:
+            self.load_file(path)
 
     # ------------------------------------------------------------------ #
     #  Scroll helpers
@@ -441,7 +589,11 @@ def main():
         print(f"File not found: {path}")
         sys.exit(1)
 
-    root = tk.Tk()
+    if _DND_AVAILABLE:
+        root = TkinterDnD.Tk()
+    else:
+        root = tk.Tk()
+
     app = MarkdownViewer(root)
     if path:
         app.load_file(path)
