@@ -1,30 +1,26 @@
 # Platessa
 ![platessa](logo.png)
 
-platessa.py is a markdown viewer vibecoded in python with Tkinter.
+Platessa is a fast, lightweight Markdown viewer written in C using SDL2.
 
 ## Features
-- Pictures displayed in place
-- LaTeX formulas renderer
+- Single portable binary, no runtime dependencies
+- Drag and drop
+- Images render directly in the document
+- LaTeX formulas rendering via `latex` and `dvipng`
+- Markdown tables support
+- Vim keybindings
+- Zoom with automatic window resizing
 
-## Install requirements
-If you don't want to create a virtual environment skip to second step 
-
-1. Set python venv 
-    ```bash
-    python -m venv platessa
-    source platessa/bin/activate
-    ```
-2. Install requirements
-    ```bash
-    pip install -r requirements.txt
-    ```
+## Build Instructions
+- You need the SDL2 development libraries and (optionally) a LaTeX distribution 
+  for math rendering.
+To build just run `make`
 
 ## Usage
-- Press C-o to open a file or press `:` and then type the path
-- Vim keybindings: j k h l gg G C-d C-u C-f C-b
-- Zoom: + / - / 0 with automatic window resize
-- Support for local (relative/absolute) and remote images
-- Clicking links: images displayed in place, other links copied to clipboard
-- Reload file: r
-- Quit reader: q
+- To open a file run `./platessa <file.md>` or `./platessa` and then use drag 
+  and drop
+- Vim keybindings: `j`, `k`, `gg`, `G`, `Ctrl-d`, `Ctrl-u`, `Ctrl-f`, `Ctrl-b`
+- Zoom: `+`, `-`, `0` 
+- Reload file: `r`
+- Quit reader: `q`
