@@ -1082,36 +1082,58 @@ static void layout_table_block(Block *b, float max_width, int font_px) {
     float cell_pad = 8.0f * (font_px / BASE_FONT_SIZE);
     float line_h = font_px * LINE_HEIGHT_MUL;
 
+    // 1. First pass: Find the longest *word* in each column
     for (int c = 0; c < b->col_count; c++) {
-        float max_w = 100.0f; // Minimum column width
+        float max_w = 50.0f; // absolute minimum width
         for (int r = 0; r < b->row_count; r++) {
             if (c >= b->rows[r].cell_count) continue;
             TableCell *cell = &b->rows[r].cells[c];
-            float w = 0;
+            
             for (int ri = 0; ri < cell->run_count; ri++) {
                 Run *run = &cell->runs[ri];
                 if (run->style == ST_INLINE_MATH) {
-                    w += 60.0f;
-                } else {
-                    TTF_Font *font = font_for_style(run->style);
-                    TTF_SetFontSize(font, font_px);
-                    int tw = 0;
-                    TTF_SizeUTF8(font, run->text, &tw, NULL);
-                    w += tw;
+                    if (60.0f > max_w) max_w = 60.0f;
+                    continue;
+                }
+                TTF_Font *font = font_for_style(run->style);
+                TTF_SetFontSize(font, font_px);
+                
+                int n = (int)strlen(run->text);
+                int i = 0;
+                while (i < n) {
+                    int start = i;
+                    // Skip spaces
+                    while (i < n && isspace((unsigned char)run->text[i])) i++;
+                    start = i;
+                    // Find word end
+                    while (i < n && !isspace((unsigned char)run->text[i])) i++;
+                    if (i > start) {
+                        char *word = str_ndup(run->text + start, i - start);
+                        int tw = 0;
+                        TTF_SizeUTF8(font, word, &tw, NULL);
+                        if ((float)tw > max_w) max_w = (float)tw;
+                        free(word);
+                    }
                 }
             }
-            if (w > max_w) max_w = w;
         }
         b->col_widths[c] = max_w + cell_pad * 2;
     }
 
+    // 2. Distribute remaining space if total width is less than page width
     float total_w = 0;
     for (int c = 0; c < b->col_count; c++) total_w += b->col_widths[c];
-    if (total_w > max_width && total_w > 0) {
+    
+    if (total_w < max_width && b->col_count > 0) {
+        float extra = (max_width - total_w) / b->col_count;
+        for (int c = 0; c < b->col_count; c++) b->col_widths[c] += extra;
+    } else if (total_w > max_width && total_w > 0) {
+        // If it exceeds page width, scale down (but it will be tight)
         float scale = max_width / total_w;
         for (int c = 0; c < b->col_count; c++) b->col_widths[c] *= scale;
     }
 
+    // 3. Second pass: Layout words inside cells (wrapping them)
     float y = 0;
     for (int r = 0; r < b->row_count; r++) {
         float row_h = line_h;
@@ -1134,9 +1156,7 @@ static void layout_table_block(Block *b, float max_width, int font_px) {
                         float scale = 1.0f;
                         if (mh > 0) scale = target_h / (float)mh;
                         
-                        if (cell_w > 0 && mw * scale > cell_w) {
-                            scale = cell_w / (float)mw;
-                        }
+                        if (cell_w > 0 && mw * scale > cell_w) scale = cell_w / (float)mw;
                         
                         int dw = (int)(mw * scale);
                         int dh = (int)(mh * scale);
